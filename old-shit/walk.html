@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reka Paka – Walk</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; }
+#info {
+  position:fixed; bottom:20px; left:50%; transform:translateX(-50%);
+  color:#fff; font-family:monospace; font-size:13px;
+  background:rgba(0,0,0,.65); padding:8px 18px; border-radius:20px;
+  white-space:nowrap;
+}
+#crosshair {
+  position:fixed; top:50%; left:50%; transform:translate(-50%,-50%);
+  width:12px; height:12px; pointer-events:none;
+}
+#crosshair::before, #crosshair::after {
+  content:''; position:absolute; background:rgba(255,255,255,.6);
+}
+#crosshair::before { width:2px; height:12px; left:5px; top:0; }
+#crosshair::after  { width:12px; height:2px; top:5px; left:0; }
+</style>
+</head>
+<body>
+<div id="info">W/S = forward/back &nbsp;·&nbsp; A/D = strafe &nbsp;·&nbsp; Click = lock mouse &nbsp;·&nbsp; ESC = unlock</div>
+<div id="crosshair"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="terrain_mesh.js"></script>
+<script>
+
+(function poll(){
+  if(typeof THREE==='undefined'||typeof MESH_VERTS==='undefined'){setTimeout(poll,30);return;}
+  init();
+})();
+
+function decode(b64){
+  var bin=atob(b64),ab=new ArrayBuffer(bin.length),u8=new Uint8Array(ab);
+  for(var i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  return ab;
+}
+
+function init(){
+  var renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.shadowMap.enabled=true;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure=1.1;
+  document.body.appendChild(renderer.domElement);
+
+  var scene=new THREE.Scene();
+  scene.background=new THREE.Color(0x7ab4d4);
+  
+
+  var camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,0.1,250);
+  // Start at one end of the map (Z=+100), looking toward -Z
+  camera.position.set(0, 4, 100);
+  camera.rotation.order='YXZ';
+  scene.add(camera);
+
+  // Lighting
+  scene.add(new THREE.AmbientLight(0xd8eef8,1.1));
+  var sun=new THREE.DirectionalLight(0xfff4d0,1.8);
+  sun.position.set(60,100,40);
+  sun.castShadow=true;
+  sun.shadow.mapSize.set(1024,1024);
+  sun.shadow.camera.left=-150; sun.shadow.camera.right=150;
+  sun.shadow.camera.top=150; sun.shadow.camera.bottom=-150;
+  sun.shadow.camera.far=300;
+  scene.add(sun);
+  scene.add(new THREE.HemisphereLight(0x88ccee,0x446622,0.8));
+
+  // Sky
+  var skyMat=new THREE.ShaderMaterial({
+    side:THREE.BackSide,
+    uniforms:{top:{value:new THREE.Color(0x2060b8)},bot:{value:new THREE.Color(0x90c8e8)}},
+    vertexShader:'varying vec3 vP;void main(){vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+    fragmentShader:'uniform vec3 top,bot;varying vec3 vP;void main(){float h=clamp((vP.y+5.)/200.,0.,1.);gl_FragColor=vec4(mix(bot,top,h*h),1.);}'
+  });
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(220,16,8),skyMat));
+
+  // Clouds
+  var cloudMat=new THREE.MeshLambertMaterial({color:0xffffff,transparent:true,opacity:.9});
+  for(var ci=0;ci<12;ci++){
+    var g=new THREE.Group();
+    [[0,0,0,4,2,3.5],[3,.4,0,3,1.6,2.5],[-3,.3,0,2.8,1.5,2.3]].forEach(function(p){
+      var s=new THREE.Mesh(new THREE.SphereGeometry(1,7,5),cloudMat);
+      s.position.set(p[0],p[1],p[2]); s.scale.set(p[3],p[4],p[5]); g.add(s);
+    });
+    g.position.set((Math.random()-.5)*250, 28+Math.random()*15, (Math.random()-.5)*200);
+    scene.add(g);
+  }
+
+  // ── Terrain mesh ──────────────────────────────────────────────────────────────
+  var verts  = new Float32Array(decode(MESH_VERTS));
+  var cBytes = new Uint8Array(decode(MESH_COLORS));
+  var faces  = new Uint32Array(decode(MESH_FACES));
+  var n = MESH_VERT_COUNT;
+
+  var colors=new Float32Array(n*3);
+  for(var i=0;i<n;i++){
+    colors[i*3]  =cBytes[i*3]/255;
+    colors[i*3+1]=cBytes[i*3+1]/255;
+    colors[i*3+2]=cBytes[i*3+2]/255;
+  }
+
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+  geo.setIndex(new THREE.BufferAttribute(faces,1));
+  geo.computeVertexNormals();
+
+  var terrainMesh=new THREE.Mesh(geo,
+    new THREE.MeshBasicMaterial({vertexColors:true,side:THREE.DoubleSide})
+  );
+  terrainMesh.receiveShadow=true;
+  scene.add(terrainMesh);
+
+  // Build heightmap lookup for camera grounding
+  // Sample terrain Y at camera XZ position
+  var hmap={};
+  for(var vi=0;vi<verts.length;vi+=3){
+    var vx=Math.round(verts[vi]);
+    var vz=Math.round(verts[vi+2]);
+    var vy=verts[vi+1];
+    var key=vx+','+vz;
+    if(!(key in hmap)||hmap[key]<vy) hmap[key]=vy;
+  }
+
+  function getHeight(x,z){
+    var gx=Math.round(x), gz=Math.round(z);
+    // Check 3x3 neighborhood
+    var best=-999;
+    for(var dx=-2;dx<=2;dx++) for(var dz=-2;dz<=2;dz++){
+      var k=(gx+dx)+','+(gz+dz);
+      if(k in hmap && hmap[k]>best) best=hmap[k];
+    }
+    return best>-999 ? best : 2;
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────────────────
+  var keys={};
+  var yaw=Math.PI, pitch=0; // start facing -Z (into the map)
+  var locked=false;
+
+  window.addEventListener('keydown',function(e){keys[e.code]=true;});
+  window.addEventListener('keyup',function(e){keys[e.code]=false;});
+
+  // Pointer lock
+  renderer.domElement.addEventListener('click',function(){
+    renderer.domElement.requestPointerLock();
+  });
+  document.addEventListener('pointerlockchange',function(){
+    locked=document.pointerLockElement===renderer.domElement;
+    document.getElementById('info').textContent = locked
+      ? 'W/S = forward/back  ·  A/D = strafe  ·  ESC = unlock'
+      : 'Click to lock mouse for look control';
+  });
+  document.addEventListener('mousemove',function(e){
+    if(!locked) return;
+    yaw   -= e.movementX * 0.002;
+    pitch  = Math.max(-1.2, Math.min(1.0, pitch - e.movementY * 0.002));
+  });
+
+  var clock=new THREE.Clock();
+
+  renderer.setAnimationLoop(function(){
+    var dt=Math.min(clock.getDelta(),.05);
+
+    // Move
+    var speed = keys['ShiftLeft']||keys['ShiftRight'] ? 12 : 5;
+    var dx=0, dz=0;
+    if(keys['KeyW']||keys['ArrowUp'])    { dx+=Math.sin(yaw)*speed*dt; dz+=Math.cos(yaw)*speed*dt; }
+    if(keys['KeyS']||keys['ArrowDown'])  { dx-=Math.sin(yaw)*speed*dt; dz-=Math.cos(yaw)*speed*dt; }
+    if(keys['KeyA']||keys['ArrowLeft'])  { dx+=Math.cos(yaw)*speed*dt; dz-=Math.sin(yaw)*speed*dt; }
+    if(keys['KeyD']||keys['ArrowRight']) { dx-=Math.cos(yaw)*speed*dt; dz+=Math.sin(yaw)*speed*dt; }
+
+    camera.position.x+=dx;
+    camera.position.z-=dz;
+
+    // Stick camera to terrain surface + eye height
+    var groundY=getHeight(camera.position.x, camera.position.z);
+    var targetY=groundY+1.7; // eye height 1.7m above ground
+    camera.position.y+=(targetY-camera.position.y)*0.15; // smooth
+
+    // Apply look
+    camera.rotation.order='YXZ';
+    camera.rotation.y=yaw;
+    camera.rotation.x=pitch;
+
+    renderer.render(scene,camera);
+  });
+
+  window.addEventListener('resize',function(){
+    camera.aspect=innerWidth/innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth,innerHeight);
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reka Paka – Velenje VR</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { overflow:hidden; background:#0a1520; font-family:'Georgia',serif; }
+#overlay {
+  position:fixed; inset:0; z-index:100;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  background:linear-gradient(160deg,#0a1a28 0%,#152a3a 50%,#0a2018 100%);
+}
+#overlay small { color:#5a90a8; font-size:.72rem; letter-spacing:.4em; text-transform:uppercase; margin-bottom:1rem; }
+#overlay h1 { font-size:clamp(2.5rem,7vw,4.5rem); color:#e0f0f8; letter-spacing:.06em; text-align:center; margin-bottom:.2em; }
+#overlay p  { color:#5a8fa8; font-size:.8rem; letter-spacing:.2em; text-transform:uppercase; margin-bottom:.6rem; }
+#overlay .hint { color:#3a6878; font-size:.75rem; margin-bottom:2.2rem; }
+.btn { padding:12px 34px; border:1.5px solid rgba(100,180,210,.45); background:rgba(100,180,210,.1); color:#b8dff0; font-size:.82rem; letter-spacing:.22em; text-transform:uppercase; cursor:pointer; border-radius:3px; transition:all .25s; margin:6px; font-family:inherit; }
+.btn:hover { background:rgba(100,180,210,.28); transform:translateY(-2px); }
+#ui { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:50; display:none; gap:10px; }
+#poi {
+  position:fixed; top:20px; left:50%; transform:translateX(-50%);
+  z-index:50; display:none; max-width:440px; width:90%;
+  background:rgba(8,18,28,.88); border:1px solid rgba(100,180,210,.35);
+  border-radius:6px; padding:16px 26px; text-align:center;
+  backdrop-filter:blur(10px); color:#ddf0f8;
+}
+#poi .lbl { font-size:.62rem; letter-spacing:.3em; text-transform:uppercase; color:#5a90a8; margin-bottom:5px; }
+#poi h2   { font-size:1.1rem; margin-bottom:7px; }
+#poi p    { font-size:.86rem; color:#90b8cc; line-height:1.6; }
+#bar { position:fixed; bottom:65px; left:50%; transform:translateX(-50%); z-index:50; display:none; align-items:center; gap:10px; color:rgba(180,220,235,.55); font-size:.72rem; letter-spacing:.12em; }
+#bfill { height:2px; width:160px; background:rgba(255,255,255,.12); border-radius:2px; }
+#binner { height:100%; background:rgba(100,180,210,.65); border-radius:2px; width:0%; transition:width .5s; }
+#loadmsg { position:fixed; inset:0; z-index:200; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#0a1a28; color:#5a90a8; font-size:.85rem; letter-spacing:.3em; gap:16px; }
+#loadbar { width:240px; height:2px; background:rgba(255,255,255,.08); border-radius:2px; }
+#loadfill { height:100%; width:0%; background:rgba(100,180,210,.8); border-radius:2px; transition:width .3s; }
+</style>
+</head>
+<body>
+
+<div id="loadmsg">
+  <div id="loadtxt">NALAGAM LIDAR…</div>
+  <div id="loadbar"><div id="loadfill"></div></div>
+</div>
+
+<div id="overlay" style="display:none">
+  <small>Velenje · Slovenija</small>
+  <h1>Reka Paka</h1>
+  <p>Virtual River Journey</p>
+  <div class="hint">🖱 Drag to look around &nbsp;·&nbsp; 🥽 VR supported</div>
+  <button class="btn" style="background:rgba(100,180,210,.2)" onclick="start()">Začni potovanje ›</button>
+  <button class="btn" id="vrbtn" onclick="enterVR()" style="display:none">🥽 Vstopi v VR</button>
+</div>
+
+<div id="ui">
+  <button class="btn" id="pbtn" onclick="togglePause()">⏸ Pavza</button>
+  <button class="btn" id="vrbtn2" onclick="enterVR()" style="display:none">🥽 VR</button>
+</div>
+
+<div id="bar"><span>Start</span><div id="bfill"><div id="binner"></div></div><span>Promenada</span></div>
+
+<div id="poi">
+  <div class="lbl">Točka zanimivosti</div>
+  <h2 id="ptitle"></h2>
+  <p id="pdesc"></p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="pointcloud.js"></script>
+<script>
+
+var renderer, scene, camera, rig, riverMat, boat, clock;
+var boatZ=0, paused=false, started=false, t=0;
+var camYaw=0, camPitch=0, dragging=false, lx=0, ly=0;
+var curPOI=-1, poiTO=null;
+var TOTAL=110; // full Z range of point cloud
+
+function start(){
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('ui').style.display='flex';
+  document.getElementById('bar').style.display='flex';
+  started=true; clock.start();
+}
+function togglePause(){
+  paused=!paused;
+  document.getElementById('pbtn').textContent=paused?'▶ Nadaljuj':'⏸ Pavza';
+}
+async function enterVR(){
+  if(!navigator.xr){alert('WebXR ni podprt.');return;}
+  try{
+    var s=await navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']});
+    renderer.xr.setSession(s);
+  }catch(e){alert('VR ni na voljo: '+e.message);}
+}
+
+// Wait for Three.js and point cloud data
+(function poll(){
+  if(typeof THREE==='undefined'||typeof PC_DATA==='undefined'||typeof PC_COUNT==='undefined'){
+    setTimeout(poll,30); return;
+  }
+  document.getElementById('loadfill').style.width='40%';
+  document.getElementById('loadtxt').textContent='GRADIM SCENO…';
+  setTimeout(function(){
+    document.getElementById('loadfill').style.width='100%';
+    setTimeout(function(){
+      document.getElementById('loadmsg').style.display='none';
+      document.getElementById('overlay').style.display='flex';
+      init();
+    },300);
+  },100);
+})();
+
+function init(){
+
+  // Renderer
+  renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.toneMapping=THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure=1.1;
+  renderer.xr.enabled=true;
+  document.body.appendChild(renderer.domElement);
+
+  scene=new THREE.Scene();
+  scene.background=new THREE.Color(0x6aa8cc);
+  scene.fog=new THREE.Fog(0x8dc4e0,80,250);
+
+  camera=new THREE.PerspectiveCamera(72,innerWidth/innerHeight,0.1,300);
+  rig=new THREE.Group();
+  rig.add(camera);
+  // River floor at Y≈0, surface at Y≈1, camera seated in boat at Y≈2
+  rig.position.set(0,2.2,55); // start at positive Z end of point cloud
+  scene.add(rig);
+
+  clock=new THREE.Clock();
+
+  // Lighting (affects boat only, not point cloud)
+  scene.add(new THREE.AmbientLight(0xffffff,1.5));
+  var sun=new THREE.DirectionalLight(0xfff8e8,1.0);
+  sun.position.set(50,80,30);
+  scene.add(sun);
+
+  // Sky gradient
+  var skyMat=new THREE.ShaderMaterial({
+    side:THREE.BackSide,
+    uniforms:{top:{value:new THREE.Color(0x2060b0)},bot:{value:new THREE.Color(0x90c8e8)}},
+    vertexShader:'varying vec3 vP;void main(){vP=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+    fragmentShader:'uniform vec3 top,bot;varying vec3 vP;void main(){float h=clamp((vP.y+5.)/250.,0.,1.);gl_FragColor=vec4(mix(bot,top,h*h),1.);}'
+  });
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(240,16,8),skyMat));
+
+  // ── POINT CLOUD ──────────────────────────────────────────────────────────────
+  // Decode base64 binary data
+  var bin=atob(PC_DATA);
+  var ab=new ArrayBuffer(bin.length);
+  var u8=new Uint8Array(ab);
+  for(var i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+
+  var floats=new Float32Array(ab);
+  var n=PC_COUNT;
+
+  // Separate positions and colors
+  var positions=new Float32Array(n*3);
+  var colors=new Float32Array(n*3);
+
+  for(var i=0;i<n;i++){
+    var base=i*4; // 4 floats per point: x,y,z, then rgba packed
+    positions[i*3]  =floats[base];    // x
+    positions[i*3+1]=floats[base+1];  // y
+    positions[i*3+2]=floats[base+2];  // z
+
+    // RGB packed in 4th float slot as bytes
+    var byteBase=i*16+12; // 4 floats * 4 bytes = 16 bytes per point, skip first 12
+    colors[i*3]  =u8[byteBase]/255;
+    colors[i*3+1]=u8[byteBase+1]/255;
+    colors[i*3+2]=u8[byteBase+2]/255;
+  }
+
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+
+  // Point size: larger = more filled, smaller = more sparse
+  var mat=new THREE.PointsMaterial({
+    size:0.35,
+    vertexColors:true,
+    sizeAttenuation:true,
+    depthWrite:true
+  });
+
+  var cloud=new THREE.Points(geo,mat);
+  scene.add(cloud);
+
+  // ── River water overlay ───────────────────────────────────────────────────────
+  // Thin animated water plane sits at Y≈1 (just above river floor)
+  riverMat=new THREE.ShaderMaterial({
+    transparent:true,
+    uniforms:{
+      t:{value:0},
+      c1:{value:new THREE.Color(0x2888b0)},
+      c2:{value:new THREE.Color(0x0a5878)}
+    },
+    vertexShader:[
+      'uniform float t; varying vec2 vUv; varying float vW;',
+      'void main(){',
+      '  vUv=uv; vec3 p=position;',
+      '  vW=sin(p.x*2.+t*1.5)*.05+cos(p.x*5.-t*2.)*.02;',
+      '  p.y+=vW;',
+      '  gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);',
+      '}'
+    ].join('\n'),
+    fragmentShader:[
+      'uniform float t; uniform vec3 c1,c2; varying vec2 vUv; varying float vW;',
+      'void main(){',
+      '  float rx=sin(vUv.x*12.+t*2.5)*.5+.5;',
+      '  float ry=cos(vUv.y*9.-t*3.)*.5+.5;',
+      '  float rip=rx*ry;',
+      '  float edge=smoothstep(0.,.1,vUv.x)*smoothstep(1.,.9,vUv.x);',
+      '  vec3 col=mix(c2,c1,edge*.7+rip*.3);',
+      '  float sh=pow(max(0.,sin(vUv.x*20.+t*5.)*cos(vUv.y*15.-t*3.5)),6.)*.4;',
+      '  col+=vec3(sh*.7,sh*.85,sh);',
+      '  gl_FragColor=vec4(col,.75);',
+      '}'
+    ].join('\n')
+  });
+
+  // River width ~10m based on point cloud, running along Z axis
+  var river=new THREE.Mesh(new THREE.PlaneGeometry(10,250,16,60),riverMat);
+  river.rotation.x=-Math.PI/2;
+  river.position.set(0,1.0,-20); // centered on river, Y=1 above floor
+  scene.add(river);
+
+  // ── Boat ─────────────────────────────────────────────────────────────────────
+  boat=new THREE.Group();
+  var wOak=new THREE.MeshLambertMaterial({color:0x9a6830});
+  var wDark=new THREE.MeshLambertMaterial({color:0x5a3818});
+  var wSeat=new THREE.MeshLambertMaterial({color:0xb07838});
+
+  var hull=new THREE.Mesh(new THREE.BoxGeometry(1.5,.42,3.8),wOak);
+  hull.position.set(0,-.38,0); boat.add(hull);
+  var bow=new THREE.Mesh(new THREE.CylinderGeometry(.05,.52,1.1,6),wOak);
+  bow.rotation.x=-Math.PI/2; bow.position.set(0,-.38,-2.35); boat.add(bow);
+  var stern=new THREE.Mesh(new THREE.BoxGeometry(1.5,.42,.15),wDark);
+  stern.position.set(0,-.38,1.85); boat.add(stern);
+  [-0.74,0.74].forEach(function(sx){
+    var s=new THREE.Mesh(new THREE.BoxGeometry(.1,.52,3.8),wDark);
+    s.position.set(sx,-.18,0); boat.add(s);
+  });
+  [-1.0,0,.95].forEach(function(bz){
+    var s=new THREE.Mesh(new THREE.BoxGeometry(1.32,.06,.26),wSeat);
+    s.position.set(0,-.14,bz); boat.add(s);
+  });
+  for(var fb=-1.6;fb<=1.6;fb+=.2){
+    var bd=new THREE.Mesh(new THREE.BoxGeometry(1.2,.04,.14),wDark);
+    bd.position.set(0,-.56,fb); boat.add(bd);
+  }
+  boat.position.set(0,.2,0);
+  scene.add(boat);
+
+  // ── POIs ─────────────────────────────────────────────────────────────────────
+  var POIS=[
+    {z:40,  title:"Park ob Paki",         desc:"Na severnem bregu reke Paka se razteza mestni park z drevoredom lip in smrek."},
+    {z:20,  title:"Sprehajalna pot",       desc:"Ob reki vodi urejena asfaltna pot med starimi drevoredi."},
+    {z:0,   title:"Modernistično Velenje", desc:"V ozadju se dvigujejo stanovanjski bloki iz 50. let. Velenje je edinstveno socialistično mesto-vrt."},
+    {z:-40, title:"Amfiteater Promenade",  desc:"Nagrajeni projekt biroja ENOTA iz leta 2014. Betonske stopnice se spuščajo do reke."},
+    {z:-80, title:"Stekleni most",         desc:"Most s stekleno ograjo. Projekt je leta 2016 prejel nagrado Architizer A+Award."}
+  ];
+  function checkPOI(z){
+    for(var i=0;i<POIS.length;i++){
+      if(Math.abs(z-POIS[i].z)<8&&i!==curPOI){
+        curPOI=i;
+        document.getElementById('ptitle').textContent=POIS[i].title;
+        document.getElementById('pdesc').textContent=POIS[i].desc;
+        var el=document.getElementById('poi'); el.style.display='block';
+        clearTimeout(poiTO);
+        poiTO=setTimeout(function(){document.getElementById('poi').style.display='none';},8000);
+      }
+    }
+  }
+
+  // ── Controls ──────────────────────────────────────────────────────────────────
+  function onDrag(dx,dy){
+    camYaw-=dx*.003;
+    camPitch=Math.max(-.55,Math.min(.38,camPitch-dy*.003));
+    camera.rotation.order='YXZ';
+    camera.rotation.y=camYaw; camera.rotation.x=camPitch;
+  }
+  renderer.domElement.addEventListener('mousedown',function(e){dragging=true;lx=e.clientX;ly=e.clientY;});
+  window.addEventListener('mouseup',function(){dragging=false;});
+  window.addEventListener('mousemove',function(e){if(!dragging)return;onDrag(e.clientX-lx,e.clientY-ly);lx=e.clientX;ly=e.clientY;});
+  renderer.domElement.addEventListener('touchstart',function(e){dragging=true;lx=e.touches[0].clientX;ly=e.touches[0].clientY;},{passive:true});
+  window.addEventListener('touchend',function(){dragging=false;});
+  window.addEventListener('touchmove',function(e){if(!dragging)return;onDrag(e.touches[0].clientX-lx,e.touches[0].clientY-ly);lx=e.touches[0].clientX;ly=e.touches[0].clientY;},{passive:true});
+
+  if(navigator.xr) navigator.xr.isSessionSupported('immersive-vr').then(function(ok){
+    if(ok){document.getElementById('vrbtn').style.display='inline-block';document.getElementById('vrbtn2').style.display='inline-block';}
+  });
+  window.addEventListener('resize',function(){
+    camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight);
+  });
+
+  // ── Render loop ───────────────────────────────────────────────────────────────
+  renderer.setAnimationLoop(function(){
+    var dt=Math.min(clock.getDelta(),.05);
+    t+=dt;
+    riverMat.uniforms.t.value=t;
+
+    if(started&&!paused){
+      // Travel from Z=+55 to Z=-55 (through the point cloud)
+      if(boatZ<TOTAL) boatZ+=0.04;
+
+      var worldZ=55-boatZ; // actual world Z position
+
+      document.getElementById('binner').style.width=(boatZ/TOTAL*100)+'%';
+
+      if(boatZ>=TOTAL){
+        document.getElementById('ptitle').textContent='🏁 Promenada Velenje';
+        document.getElementById('pdesc').textContent='Prispeli ste na Promenado! Hvala za potovanje po reki Paki.';
+        document.getElementById('poi').style.display='block';
+      }
+
+      var bob=Math.sin(t*1.0)*.018;
+      var roll=Math.sin(t*.7)*.009;
+
+      boat.position.z=worldZ; boat.position.y=bob;
+      boat.rotation.z=roll;
+      rig.position.z=worldZ; rig.position.y=2.2+bob;
+      rig.rotation.z=roll*.25;
+
+      checkPOI(worldZ);
+    }
+    renderer.render(scene,camera);
+  });
+}
+</script>
+</body>
+</html>

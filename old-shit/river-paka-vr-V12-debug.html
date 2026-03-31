@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Reka Paka – Velenje VR</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { overflow:hidden; background:#0a1a28; font-family:'Georgia',serif; }
+#overlay {
+  position:fixed; inset:0; z-index:100;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  background:linear-gradient(160deg,#0a1a28 0%,#152a3a 50%,#0a2018 100%);
+}
+#overlay small { color:#5a90a8; font-size:.72rem; letter-spacing:.4em; text-transform:uppercase; margin-bottom:1rem; }
+#overlay h1 { font-size:clamp(2.5rem,7vw,4.5rem); color:#e0f0f8; letter-spacing:.06em; text-align:center; margin-bottom:.2em; }
+#overlay p  { color:#5a8fa8; font-size:.8rem; letter-spacing:.2em; text-transform:uppercase; margin-bottom:.6rem; }
+#overlay .hint { color:#3a6878; font-size:.75rem; margin-bottom:2.2rem; }
+.btn { padding:12px 34px; border:1.5px solid rgba(100,180,210,.45); background:rgba(100,180,210,.1); color:#b8dff0; font-size:.82rem; letter-spacing:.22em; text-transform:uppercase; cursor:pointer; border-radius:3px; transition:all .25s; margin:6px; font-family:inherit; }
+.btn:hover { background:rgba(100,180,210,.28); transform:translateY(-2px); }
+#ui { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:50; display:none; gap:10px; }
+#poi {
+  position:fixed; top:20px; left:50%; transform:translateX(-50%);
+  z-index:50; display:none; max-width:440px; width:90%;
+  background:rgba(8,18,28,.88); border:1px solid rgba(100,180,210,.35);
+  border-radius:6px; padding:16px 26px; text-align:center;
+  backdrop-filter:blur(10px); color:#ddf0f8;
+}
+#poi .lbl { font-size:.62rem; letter-spacing:.3em; text-transform:uppercase; color:#5a90a8; margin-bottom:5px; }
+#poi h2   { font-size:1.1rem; margin-bottom:7px; }
+#poi p    { font-size:.86rem; color:#90b8cc; line-height:1.6; }
+#bar { position:fixed; bottom:65px; left:50%; transform:translateX(-50%); z-index:50; display:none; align-items:center; gap:10px; color:rgba(180,220,235,.55); font-size:.72rem; letter-spacing:.12em; }
+#bfill { height:2px; width:160px; background:rgba(255,255,255,.12); border-radius:2px; }
+#binner{ height:100%; background:rgba(100,180,210,.65); border-radius:2px; width:0%; transition:width .5s; }
+</style>
+</head>
+<body>
+
+
+<div id="debug" style="position:fixed;top:10px;left:10px;z-index:999;background:rgba(0,0,0,.85);color:#0f0;font-family:monospace;font-size:12px;padding:10px;border-radius:4px;max-width:420px;pointer-events:none;">
+  <div id="dlog">Starting...</div>
+</div>
+<div id="overlay">
+  <small>Velenje · Slovenija</small>
+  <h1>Reka Paka</h1>
+  <p>Virtual River Journey</p>
+  <div class="hint">🖱 Drag to look around &nbsp;·&nbsp; 🥽 VR supported</div>
+  <button class="btn" style="background:rgba(100,180,210,.2)" onclick="start()">Začni potovanje ›</button>
+  <button class="btn" id="vrbtn" onclick="enterVR()" style="display:none">🥽 Vstopi v VR</button>
+</div>
+
+<div id="ui">
+  <button class="btn" id="pbtn" onclick="togglePause()">⏸ Pavza</button>
+  <button class="btn" id="vrbtn2" onclick="enterVR()" style="display:none">🥽 VR</button>
+</div>
+
+<div id="bar"><span>Start</span><div id="bfill"><div id="binner"></div></div><span>Promenada</span></div>
+
+<div id="poi">
+  <div class="lbl">Točka zanimivosti</div>
+  <h2 id="ptitle"></h2>
+  <p id="pdesc"></p>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<!-- Full resolution LiDAR terrain - must be in same folder -->
+<script src="terrain_out.js"></script>
+<script>
+function initScene() {
+
+function dbg(msg) {
+  const el = document.getElementById('dlog');
+  if(el) el.innerHTML += '<br>' + msg;
+  console.log('[DBG]', msg);
+}
+dbg('Script started');
+
+  dbg('initScene called, TERRAIN_VERTS type: ' + typeof TERRAIN_VERTS);
+  if (typeof TERRAIN_VERTS === 'undefined') {
+    dbg('Waiting for terrain...');
+    setTimeout(initScene, 50);
+    return;
+  }
+
+// ── Renderer ──────────────────────────────────────────────────────────────────
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+dbg('Renderer created OK'); renderer.xr.enabled = true;
+document.body.appendChild(renderer.domElement); dbg('Canvas added to DOM');
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x8ec8e8);
+scene.fog = new THREE.FogExp2(0x9ed4ec, 0.006);
+
+const camera = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.05, 600);
+const rig = new THREE.Group();
+rig.add(camera);
+scene.add(rig);
+
+// ── Lighting ──────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xcce8f0, 1.0));
+const sun = new THREE.DirectionalLight(0xfff4d0, 2.2);
+sun.position.set(60, 100, 40);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left   = -150; sun.shadow.camera.right = 150;
+sun.shadow.camera.top    =  150; sun.shadow.camera.bottom = -150;
+sun.shadow.camera.far    = 500;
+scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x87ceeb, 0x4a7a2e, 0.65));
+const fill = new THREE.DirectionalLight(0xffd090, 0.35);
+fill.position.set(-60, 30, 0);
+scene.add(fill);
+
+// ── Sky ───────────────────────────────────────────────────────────────────────
+(()=>{
+  const mat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: {
+      top: {value: new THREE.Color(0x1a5fa8)},
+      bot: {value: new THREE.Color(0x9ed4ec)}
+    },
+    vertexShader:   `varying vec3 vP; void main(){vP=position; gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+    fragmentShader: `uniform vec3 top,bot; varying vec3 vP; void main(){float h=clamp((vP.y+10.)/400.,0.,1.); gl_FragColor=vec4(mix(bot,top,h),1.);}`
+  });
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(500,16,8), mat));
+})();
+dbg("Terrain mesh built OK");
+
+// ── Clouds ────────────────────────────────────────────────────────────────────
+const clouds = [];
+function mkCloud(x,y,z){
+  const g = new THREE.Group();
+  const m = new THREE.MeshLambertMaterial({color:0xffffff, transparent:true, opacity:.88});
+  [[0,0,0,4,2.4,3.5],[3,.4,0,2.8,1.7,2.5],[-3,.3,0,2.8,1.6,2.4],[0,.9,0,2,1.3,2]].forEach(([px,py,pz,sx,sy,sz])=>{
+    const s = new THREE.Mesh(new THREE.SphereGeometry(1,7,5), m);
+    s.position.set(px,py,pz); s.scale.set(sx,sy,sz); g.add(s);
+  });
+  g.position.set(x,y,z); scene.add(g); clouds.push(g);
+}
+for(let i=0;i<18;i++) mkCloud((Math.random()-.5)*300, 28+Math.random()*18, (Math.random()-.5)*200);
+
+// ── LiDAR Terrain ─────────────────────────────────────────────────────────────
+// Terrain coordinate analysis:
+//   X: -99.7 .. 100.0  (200m wide, centered at 0)
+//   Y: -10.3 .. +10.2  (river channel avg Y ≈ -4.45)
+//   Z: -81.6 .. +81.6  (163m long, centered at 0)
+//
+// Strategy: shift Y so river sits at world y=0, scale Y slightly to feel natural.
+// River avg Y = -4.45 → add 4.45 to all Y to bring river to ~0.
+// Then scale Y by 0.5 so banks feel like 1-3m, not 7m cliffs.
+// Terrain Z goes -82..+82, scene boat travels z=0 to z=-150
+// so offset terrain Z by -40 to cover the journey.
+
+(()=>{
+  const geo = new THREE.BufferGeometry();
+
+  // Remap Y: (y + 4.45) * 0.5
+  const rawVerts = TERRAIN_VERTS;
+  const verts = new Float32Array(rawVerts.length);
+  for(let i=0; i<rawVerts.length; i+=3){
+    verts[i]   = rawVerts[i];                      // X unchanged
+    verts[i+1] = (rawVerts[i+1] + 4.45) * 0.5;    // Y: shift + compress
+    verts[i+2] = rawVerts[i+2];                    // Z unchanged
+  }
+
+  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  geo.setIndex(new THREE.BufferAttribute(TERRAIN_FACES, 1));
+  geo.computeVertexNormals();
+
+  // Height-based vertex colors
+  const cols = new Float32Array(verts.length);
+  for(let i=0; i<verts.length; i+=3){
+    const y = verts[i+1];
+    let r,g,b;
+    if(y < 0.1)      { r=0.48; g=0.42; b=0.30; }  // riverbed – sandy gravel
+    else if(y < 0.6) { r=0.32; g=0.30; b=0.20; }  // water's edge – wet mud
+    else if(y < 1.4) { r=0.26; g=0.42; b=0.18; }  // low bank – dark grass
+    else if(y < 2.5) { r=0.30; g=0.50; b=0.20; }  // mid slope
+    else if(y < 3.8) { r=0.34; g=0.54; b=0.22; }  // upper bank
+    else             { r=0.36; g=0.56; b=0.24; }  // high ground / park
+    cols[i]=r; cols[i+1]=g; cols[i+2]=b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(cols, 3));
+
+  const mat = new THREE.MeshLambertMaterial({vertexColors:true, side:THREE.DoubleSide});
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
+  mesh.castShadow = false; // skip for perf
+
+  // Center terrain over the river journey
+  // Terrain Z -82..+82, boat travels 0..-150
+  // Shift so terrain center is at z=-40
+  mesh.position.set(0, 0, -40);
+  scene.add(mesh);
+})();
+
+// ── River water ───────────────────────────────────────────────────────────────
+const riverMat = new THREE.ShaderMaterial({
+  transparent: true,
+  uniforms: {
+    t:  {value:0},
+    c1: {value: new THREE.Color(0x3a9ab8)},
+    c2: {value: new THREE.Color(0x10608a)}
+  },
+  vertexShader:`
+    uniform float t; varying vec2 uv2; varying float w;
+    void main(){
+      uv2=uv; vec3 p=position;
+      w = sin(p.x*5.+t*3.)*.028 + cos(p.y*2.5+t*2.)*.022;
+      p.z += w;
+      gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.);
+    }`,
+  fragmentShader:`
+    uniform float t; uniform vec3 c1,c2; varying vec2 uv2; varying float w;
+    void main(){
+      float rx=sin(uv2.x*20.+t*4.)*.5+.5;
+      float ry=sin(uv2.y*14.-t*5.)*.5+.5;
+      float rip=rx*ry;
+      vec3 col=mix(c2,c1,.4+rip*.48+w*3.5);
+      col += pow(rip,3.)*.3;
+      float spec=pow(max(0.,sin(uv2.x*32.+t*7.)*sin(uv2.y*22.-t*5.)),10.)*.35;
+      col += vec3(spec);
+      gl_FragColor=vec4(col,.84);
+    }`
+});
+const river = new THREE.Mesh(new THREE.PlaneGeometry(8, 200, 24, 100), riverMat);
+river.rotation.x = -Math.PI/2;
+river.position.set(0, 0.08, -75);
+scene.add(river);
+
+// Foam strips at water edge
+[1,-1].forEach(s=>{
+  const foam = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.6, 200),
+    new THREE.MeshLambertMaterial({color:0xddeef5, transparent:true, opacity:.4})
+  );
+  foam.rotation.x = -Math.PI/2;
+  foam.position.set(s*4.1, 0.09, -75);
+  scene.add(foam);
+});
+
+// ── Rocks ─────────────────────────────────────────────────────────────────────
+const rockMat = new THREE.MeshLambertMaterial({color:0x7a7060});
+function mkRock(x,z,s){
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(s,0), rockMat);
+  m.position.set(x, 0.05, z);
+  m.rotation.set(Math.random()*2, Math.random()*3, 0);
+  m.scale.y = .38;
+  scene.add(m);
+}
+for(let z=-2; z>-148; z-=1.4+Math.random()*2.2){
+  if(Math.random()>.38) mkRock((Math.random()-.5)*6.5, z, .08+Math.random()*.3);
+  if(Math.random()>.72) mkRock((Math.random()-.5)*6,   z+.7, .06+Math.random()*.18);
+}
+
+// ── Trees ─────────────────────────────────────────────────────────────────────
+const GY = 0.5;
+const rn = (a,b) => a+Math.random()*(b-a);
+
+function mkSpruce(x,z,h=1){
+  const g = new THREE.Group();
+  g.add(Object.assign(new THREE.Mesh(
+    new THREE.CylinderGeometry(.1*h,.18*h,1.8*h,6),
+    new THREE.MeshLambertMaterial({color:0x4a3020})
+  ), {position: new THREE.Vector3(0,.9*h,0)}));
+  const fm = new THREE.MeshLambertMaterial({color:0x1a4a22});
+  [[2.4*h,1.1*h],[3.2*h,.86*h],[4.0*h,.62*h],[4.7*h,.38*h]].forEach(([py,r])=>{
+    const c = new THREE.Mesh(new THREE.ConeGeometry(r, r*1.4+.2, 7), fm);
+    c.position.y = py; c.castShadow=true; g.add(c);
+  });
+  g.position.set(x,GY,z); scene.add(g);
+}
+
+function mkTree(x,z,h=1){
+  const g = new THREE.Group();
+  const th = 2.4*h;
+  g.add(Object.assign(new THREE.Mesh(
+    new THREE.CylinderGeometry(.12*h,.22*h,th,7),
+    new THREE.MeshLambertMaterial({color:0x5a4030})
+  ), {position: new THREE.Vector3(0,th/2,0)}));
+  const lm = new THREE.MeshLambertMaterial({color:0x2d6020});
+  [[0,th+.7,0,1.6*h,1.1*h,1.5*h],[.55*h,th+.2,0,1.2*h,.8*h,1.2*h],[-.5*h,th+.15,0,1.1*h,.75*h,1.1*h]].forEach(([px,py,pz,sx,sy,sz])=>{
+    const b = new THREE.Mesh(new THREE.SphereGeometry(1,6,5), lm);
+    b.position.set(px,py,pz); b.scale.set(sx,sy,sz); b.castShadow=true; g.add(b);
+  });
+  g.position.set(x,GY,z); scene.add(g);
+}
+
+// Left bank
+for(let z=-2; z>-148; z-=1.8+Math.random()*2.5){
+  const x = -(10+Math.random()*14);
+  Math.random()>.45 ? mkSpruce(x,z,rn(.85,1.4)) : mkTree(x,z,rn(.9,1.5));
+  if(Math.random()>.5) Math.random()>.4 ? mkSpruce(x-rn(3,8),z+rn(-2,2),rn(.7,1.2)) : mkTree(x-rn(3,6),z+rn(-2,2),rn(.8,1.3));
+}
+// Right bank
+for(let z=-2; z>-148; z-=2.5+Math.random()*3){
+  const x = 10+Math.random()*13;
+  Math.random()>.5 ? mkSpruce(x,z,rn(.7,1.3)) : mkTree(x,z,rn(.8,1.4));
+  if(Math.random()>.55) Math.random()>.4 ? mkSpruce(x+rn(3,8),z+rn(-2,2),rn(.7,1.2)) : mkTree(x+rn(3,7),z+rn(-2,2),rn(.8,1.3));
+}
+
+// ── Buildings ─────────────────────────────────────────────────────────────────
+function mkBuilding(x,z,w,h,d,col){
+  const mat = new THREE.MeshLambertMaterial({color:col});
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w,h,d), mat);
+  m.position.set(x, GY+h/2, z); m.castShadow=true; scene.add(m);
+  const wm = new THREE.MeshLambertMaterial({color:0xb8d4e4, emissive:0x203040, emissiveIntensity:.2});
+  for(let r=0; r<Math.floor(h/2.5); r++)
+    for(let c=0; c<Math.floor(w/3.2); c++){
+      const win = new THREE.Mesh(new THREE.BoxGeometry(.72,.52,.04), wm);
+      win.position.set(x-w/2+1.6+c*3.2, GY+1.4+r*2.5, z-d/2-.02); scene.add(win);
+    }
+}
+mkBuilding(-25,-18, 14,18,10, 0xb8c0c8);
+mkBuilding(-28,-36, 10,14, 8, 0xc0c8d0);
+mkBuilding(-26,-55, 12,20, 9, 0xa8b0b8);
+mkBuilding(-22,-74,  8,12, 7, 0xb0b8c0);
+mkBuilding( 25,-18,  8,22, 8, 0xb83828);
+mkBuilding( 22,-18, 10,22, 8, 0xc0a888);
+mkBuilding( 26,-36, 12,16, 9, 0xb8c0c8);
+mkBuilding( 23,-55,  9,14, 8, 0xc8c4a8);
+mkBuilding( 22,-74, 14,18,10, 0xb0b8c0);
+mkBuilding(-30,-10, 22,12,13, 0xa8b0b8);
+
+// ── Benches ───────────────────────────────────────────────────────────────────
+function mkBench(x,z){
+  const g = new THREE.Group();
+  const wm=new THREE.MeshLambertMaterial({color:0x8b6040}), mm=new THREE.MeshLambertMaterial({color:0x707880});
+  const s=new THREE.Mesh(new THREE.BoxGeometry(1.6,.06,.45),wm); s.position.y=.45; g.add(s);
+  const bk=new THREE.Mesh(new THREE.BoxGeometry(1.6,.38,.05),wm); bk.position.set(0,.68,-.2); g.add(bk);
+  [-.58,.58].forEach(lx=>{const l=new THREE.Mesh(new THREE.BoxGeometry(.06,.45,.4),mm); l.position.set(lx,.22,0); g.add(l);});
+  g.position.set(x,GY,z); g.rotation.y=Math.PI/2; scene.add(g);
+}
+for(let z=-4; z>-148; z-=8+Math.random()*5) mkBench(-13, z);
+
+// ── Lamp posts ────────────────────────────────────────────────────────────────
+function mkLamp(x,z){
+  const g = new THREE.Group();
+  const pm = new THREE.MeshLambertMaterial({color:0x909090});
+  const pole=new THREE.Mesh(new THREE.CylinderGeometry(.05,.07,4.5,6),pm); pole.position.y=2.25; g.add(pole);
+  const arm=new THREE.Mesh(new THREE.CylinderGeometry(.03,.03,1.2,5),pm); arm.rotation.z=Math.PI/2; arm.position.set(.6,4.5,0); g.add(arm);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(.15,6,4),new THREE.MeshLambertMaterial({color:0xe8e0b8,emissive:0xffe060,emissiveIntensity:.55}));
+  head.position.set(1.2,4.5,0); g.add(head);
+  const pl=new THREE.PointLight(0xffe090,.7,14); pl.position.set(1.2,4.5,0); g.add(pl);
+  g.position.set(x,GY,z); scene.add(g);
+}
+for(let z=-3; z>-148; z-=10) mkLamp(-10, z);
+
+// ── Walkway path ──────────────────────────────────────────────────────────────
+const pathMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(3, 200),
+  new THREE.MeshLambertMaterial({color:0x9c9080, side:THREE.DoubleSide})
+);
+pathMesh.rotation.x = -Math.PI/2;
+pathMesh.position.set(-11, 0.12, -75);
+scene.add(pathMesh);
+
+// ── Promenada steps + railing + bridge ────────────────────────────────────────
+function mkSteps(side,z){
+  const mat=new THREE.MeshLambertMaterial({color:0xd2c8b0});
+  for(let i=0;i<8;i++){
+    const m=new THREE.Mesh(new THREE.BoxGeometry(1.1,.18,12),mat);
+    m.position.set(side*(3.8+i*1.1),.4-i*.15,z);
+    m.rotation.z=side*.022; scene.add(m);
+  }
+}
+mkSteps( 1,-125); mkSteps(-1,-125);
+
+function mkRailing(side,z){
+  const gm=new THREE.MeshPhongMaterial({color:0xa8d8f0,transparent:true,opacity:.28,shininess:150});
+  const fm=new THREE.MeshLambertMaterial({color:0xb0bcbf});
+  for(let i=0;i<10;i++){
+    const p=new THREE.Mesh(new THREE.BoxGeometry(.04,.9,1.7),gm);
+    p.position.set(side*3.4,1.1,z-i*1.85); scene.add(p);
+  }
+  const r=new THREE.Mesh(new THREE.BoxGeometry(.05,.05,19),fm);
+  r.position.set(side*3.4,1.56,z-9); scene.add(r);
+}
+mkRailing( 1,-125); mkRailing(-1,-125);
+
+(()=>{
+  const mat=new THREE.MeshLambertMaterial({color:0xdbd2c0});
+  const deck=new THREE.Mesh(new THREE.BoxGeometry(16,.3,6),mat);
+  deck.position.set(0,1.0,-138); scene.add(deck);
+  [-1,1].forEach(s=>{
+    const w=new THREE.Mesh(new THREE.BoxGeometry(16,.5,.25),mat);
+    w.position.set(0,1.28,-138+s*2.5); scene.add(w);
+  });
+})();
+
+// ── Boat (visible hull) ───────────────────────────────────────────────────────
+const boat = new THREE.Group();
+const woodMat  = new THREE.MeshLambertMaterial({color:0x7a5228});
+const woodDark = new THREE.MeshLambertMaterial({color:0x5a3a18});
+const seatMat  = new THREE.MeshLambertMaterial({color:0xa07840});
+
+// Hull body
+boat.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.5,.45,3.8), woodMat), {position: new THREE.Vector3(0,-.42,0)}));
+// Bow (pointed front)
+const bowG = new THREE.CylinderGeometry(0,.42,1.0,6,1);
+const bow  = new THREE.Mesh(bowG, woodMat);
+bow.rotation.x = -Math.PI/2; bow.position.set(0,-.4,-2.4); boat.add(bow);
+// Stern
+boat.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.5,.45,.15), woodDark), {position: new THREE.Vector3(0,-.42,1.9)}));
+// Gunwales
+[-0.72,0.72].forEach(sx=>{
+  boat.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(.1,.14,3.8), woodDark), {position: new THREE.Vector3(sx,-.18,0)}));
+});
+// Seat boards
+[-1.0, 0, .9].forEach(bz=>{
+  boat.add(Object.assign(new THREE.Mesh(new THREE.BoxGeometry(1.3,.05,.28), seatMat), {position: new THREE.Vector3(0,-.22,bz)}));
+});
+// Rowlocks
+[-0.73,0.73].forEach(sx=>{
+  const lock = new THREE.Mesh(new THREE.TorusGeometry(.042,.016,4,6,Math.PI), woodDark);
+  lock.rotation.x = Math.PI/2; lock.position.set(sx,-.1,.3); boat.add(lock);
+});
+
+boat.position.set(0, .15, 0);
+scene.add(boat);
+
+// Camera at seated eye level
+rig.position.set(0, .75, 0);
+
+// ── POI markers ───────────────────────────────────────────────────────────────
+const POIS=[
+  {z:-8,   title:"Park ob Paki",         desc:"Na severnem bregu reke Paka se razteza mestni park z drevoredom lip in smrek. Paka je hudourniška reka — večino leta mirna in plitva, a večkrat letno divje naraste."},
+  {z:-25,  title:"Sprehajalna pot",       desc:"Ob reki vodi urejena asfaltna pot med starimi drevoredi. Tukaj se vsak dan sprehajajo domačini z otroki in psi."},
+  {z:-45,  title:"Modernistično Velenje", desc:"V ozadju se dvigujejo stanovanjski bloki iz 50. let. Velenje je bilo zgrajeno kot idealno socialistično mesto-vrt in je edinstveno v slovenskem prostoru."},
+  {z:-115, title:"Amfiteater Promenade",  desc:"Pred vami se odpre Promenada — nagrajeni projekt biroja ENOTA iz leta 2014. Bele betonske stopnice se spuščajo do reke in tvorijo amfiteater za kulturne prireditve."},
+  {z:-135, title:"Stekleni most",         desc:"Ozki betonski most s stekleno ograjo je osrednji element Promenade. Projekt je leta 2016 prejel mednarodno nagrado Architizer A+Award za najboljši javni park."}
+];
+
+POIS.forEach(p=>{
+  const s=Math.random()>.5?1:-1;
+  const post=new THREE.Mesh(new THREE.CylinderGeometry(.04,.04,1.6,6),new THREE.MeshLambertMaterial({color:0x606878}));
+  post.position.set(s*9,GY+.8,p.z); scene.add(post);
+  const sign=new THREE.Mesh(new THREE.BoxGeometry(.85,.48,.05),new THREE.MeshLambertMaterial({color:0x3a5a7a}));
+  sign.position.set(s*9,GY+1.7,p.z); scene.add(sign);
+});
+
+let curPOI=-1, poiTO=null;
+function checkPOI(z){
+  for(let i=0;i<POIS.length;i++){
+    if(Math.abs(z-POIS[i].z)<8 && i!==curPOI){
+      curPOI=i;
+      document.getElementById('ptitle').textContent=POIS[i].title;
+      document.getElementById('pdesc').textContent=POIS[i].desc;
+      const el=document.getElementById('poi'); el.style.display='block';
+      clearTimeout(poiTO);
+      poiTO=setTimeout(()=>el.style.display='none', 8000);
+      return;
+    }
+  }
+}
+
+// ── Look controls ─────────────────────────────────────────────────────────────
+let camYaw=0, camPitch=0, dragging=false, lx=0, ly=0;
+function onDrag(dx,dy){
+  camYaw  -= dx*.003;
+  camPitch = Math.max(-.65, Math.min(.45, camPitch-dy*.003));
+  camera.rotation.order='YXZ';
+  camera.rotation.y=camYaw;
+  camera.rotation.x=camPitch;
+}
+renderer.domElement.addEventListener('mousedown', e=>{dragging=true; lx=e.clientX; ly=e.clientY;});
+window.addEventListener('mouseup', ()=>dragging=false);
+window.addEventListener('mousemove', e=>{if(!dragging)return; onDrag(e.clientX-lx,e.clientY-ly); lx=e.clientX; ly=e.clientY;});
+renderer.domElement.addEventListener('touchstart', e=>{dragging=true; lx=e.touches[0].clientX; ly=e.touches[0].clientY;},{passive:true});
+window.addEventListener('touchend', ()=>dragging=false);
+window.addEventListener('touchmove', e=>{if(!dragging)return; onDrag(e.touches[0].clientX-lx,e.touches[0].clientY-ly); lx=e.touches[0].clientX; ly=e.touches[0].clientY;},{passive:true});
+
+// ── State & Controls ──────────────────────────────────────────────────────────
+let boatZ=0, paused=false, started=false;
+const clock=new THREE.Clock();
+const TOTAL=150;
+
+function togglePause(){ paused=!paused; document.getElementById('pbtn').textContent=paused?'▶ Nadaljuj':'⏸ Pavza'; }
+function start(){
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('ui').style.display='flex';
+  document.getElementById('bar').style.display='flex';
+  dbg('start() called - started=true'); started=true; clock.start();
+}
+
+async function enterVR(){
+  if(!navigator.xr){alert('WebXR ni podprt.');return;}
+  try{
+    const s=await navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']});
+    renderer.xr.setSession(s);
+  } catch(e){alert('VR ni na voljo: '+e.message);}
+}
+if(navigator.xr) navigator.xr.isSessionSupported('immersive-vr').then(ok=>{
+  if(ok){
+    document.getElementById('vrbtn').style.display='inline-block';
+    document.getElementById('vrbtn2').style.display='inline-block';
+  }
+});
+
+// ── Animation loop ────────────────────────────────────────────────────────────
+let t=0;
+renderer.setAnimationLoop(()=>{
+  const dt=Math.min(clock.getDelta(),.05);
+  t+=dt;
+  riverMat.uniforms.t.value=t;
+
+  if(started && !paused){
+    if(boatZ>-TOTAL){
+      boatZ-=0.042;
+      if(boatZ<=-TOTAL){
+        boatZ=-TOTAL;
+        document.getElementById('ptitle').textContent='🏁 Promenada Velenje';
+        document.getElementById('pdesc').textContent='Prispeli ste na Promenado! Projekt biroja ENOTA je leta 2016 prejel mednarodno nagrado Architizer A+Award. Hvala za potovanje po reki Paki.';
+        document.getElementById('poi').style.display='block';
+      }
+    }
+
+    document.getElementById('binner').style.width=(Math.abs(boatZ)/TOTAL*100)+'%';
+
+    const bob  = Math.sin(t*1.2)*.026;
+    const roll = Math.sin(t*.82)*.013;
+    const yaw  = Math.sin(t*.28)*.004;
+
+    boat.position.z=boatZ; boat.position.y=bob;
+    boat.rotation.z=roll;  boat.rotation.y=yaw;
+
+    rig.position.z=boatZ; rig.position.y=.75+bob;
+    rig.rotation.z=roll*.35;
+
+    clouds.forEach((c,i)=>{c.position.x+=dt*(.18+i*.022); if(c.position.x>160) c.position.x=-160;});
+    checkPOI(boatZ);
+  }
+
+  renderer.render(scene,camera);
+});
+
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+}
+dbg('Waiting for window load...'); window.addEventListener('load', initScene);
+</script>

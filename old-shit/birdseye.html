@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Reka Paka – Birds Eye View</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; }
+#info {
+  position:fixed; top:10px; left:10px; color:#fff; font-family:monospace; font-size:13px;
+  background:rgba(0,0,0,.6); padding:8px 14px; border-radius:4px; line-height:1.8;
+  backdrop-filter:blur(4px); border:1px solid rgba(255,255,255,.1);
+}
+a { color:#6cb8e6; }
+</style>
+</head>
+<body>
+<div id="info">Loading...</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="terrain_mesh.js"></script>
+<script>
+
+(function poll(){
+  if(typeof THREE==='undefined'||typeof MESH_VERTS==='undefined'){setTimeout(poll,30);return;}
+  init();
+})();
+
+function decode(b64){
+  var bin=atob(b64),ab=new ArrayBuffer(bin.length),u8=new Uint8Array(ab);
+  for(var i=0;i<bin.length;i++) u8[i]=bin.charCodeAt(i);
+  return ab;
+}
+
+function init(){
+  var renderer=new THREE.WebGLRenderer({antialias:true});
+  renderer.setSize(innerWidth,innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  document.body.appendChild(renderer.domElement);
+
+  var scene=new THREE.Scene();
+  scene.background=new THREE.Color(0x1a2a3a);
+
+  var aspect=innerWidth/innerHeight;
+  var viewSize=200;
+  var camera=new THREE.OrthographicCamera(
+    -viewSize*aspect/2,viewSize*aspect/2,
+     viewSize/2,-viewSize/2,-200,200
+  );
+  camera.position.set(0,100,0);
+  camera.lookAt(0,0,0);
+
+  scene.add(new THREE.AmbientLight(0xffffff,1.4));
+  var sun=new THREE.DirectionalLight(0xfff8e0,0.8);
+  sun.position.set(60,120,40); scene.add(sun);
+
+  // Decode
+  var verts   = new Float32Array(decode(MESH_VERTS));
+  var cBytes  = new Uint8Array(decode(MESH_COLORS));
+  var faces   = new Uint32Array(decode(MESH_FACES));
+  var n = MESH_VERT_COUNT;
+
+  // Enhanced colors (same algorithm as boat.html)
+  var colors=new Float32Array(n*3);
+  for(var i=0;i<n;i++){
+    var r=cBytes[i*3]/255, g=cBytes[i*3+1]/255, b=cBytes[i*3+2]/255;
+    var mx=Math.max(r,g,b), mn=Math.min(r,g,b), l=(mx+mn)/2;
+    var satBoost=1.6;
+    r=l+(r-l)*satBoost; g=l+(g-l)*satBoost; b=l+(b-l)*satBoost;
+    r=(r-0.5)*1.15+0.5; g=(g-0.5)*1.15+0.5; b=(b-0.5)*1.15+0.5;
+    g+=0.03;
+    var vy=verts[i*3+1];
+    if(vy<0.3){ var t=Math.max(0,(0.3-vy)/2.2); r=r*(1-t*0.3)+0.25*t*0.3; g=g*(1-t*0.2)+0.22*t*0.2; b=b*(1-t*0.1)+0.30*t*0.1; }
+    if(vy>1.5){ var t2=Math.min(1,(vy-1.5)/3.0)*0.08; g+=t2; }
+    colors[i*3]=Math.max(0,Math.min(1,r));
+    colors[i*3+1]=Math.max(0,Math.min(1,g));
+    colors[i*3+2]=Math.max(0,Math.min(1,b));
+  }
+
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(verts,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(colors,3));
+  geo.setIndex(new THREE.BufferAttribute(faces,1));
+  geo.computeVertexNormals();
+
+  scene.add(new THREE.Mesh(geo,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide})));
+
+  // Water overlay
+  var waterGeo=new THREE.PlaneGeometry(40,260,1,1);
+  waterGeo.rotateX(-Math.PI/2);
+  var waterMat=new THREE.MeshBasicMaterial({color:0x2088aa,transparent:true,opacity:0.45});
+  var water=new THREE.Mesh(waterGeo,waterMat);
+  water.position.set(0,0.5,-10);
+  scene.add(water);
+
+  document.getElementById('info').innerHTML=
+    n.toLocaleString()+' verts | '+MESH_FACE_COUNT.toLocaleString()+' faces<br>'+
+    'Scroll = zoom &nbsp; Drag = pan<br>'+
+    '<a href="boat.html">Open Boat Ride →</a>';
+
+  window.addEventListener('wheel',function(e){
+    viewSize=Math.max(10,Math.min(500,viewSize+e.deltaY*0.25));
+    upd();
+  });
+
+  var drag=false,ox=0,oz=0;
+  renderer.domElement.addEventListener('mousedown',function(e){drag=true;ox=e.clientX;oz=e.clientY;});
+  window.addEventListener('mouseup',function(){drag=false;});
+  window.addEventListener('mousemove',function(e){
+    if(!drag)return;
+    var a=innerWidth/innerHeight;
+    camera.position.x-=(e.clientX-ox)/innerWidth*viewSize*a*2;
+    camera.position.z+=(e.clientY-oz)/innerHeight*viewSize*2;
+    ox=e.clientX;oz=e.clientY;
+  });
+
+  function upd(){
+    var a=innerWidth/innerHeight;
+    camera.left=-viewSize*a/2;camera.right=viewSize*a/2;
+    camera.top=viewSize/2;camera.bottom=-viewSize/2;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize',function(){renderer.setSize(innerWidth,innerHeight);upd();});
+  renderer.setAnimationLoop(function(){renderer.render(scene,camera);});
+}
+</script>
+</body>
+</html>

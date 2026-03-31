@@ -1,0 +1,2 @@
+Photogrammetry overlay — if you can take photos of the area (even phone photos), tools like Meshroom or COLMAP can generate a dense point cloud that fills in what LiDAR misses (trunks, fine detail).
+Splat rendering — instead of rendering each point as a dot, render it as an oriented disc (splat) that faces the surface normal. This fills gaps much better than round points.
